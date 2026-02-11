@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>PDF Reorder, Rotate & Split</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <style>
+        :root {
+            --primary: #1677ff;
+            --split: #ff4d4f;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #f4f7f9;
+            padding: 20px;
+        }
+
+        .setup-card {
+            background: white;
+            padding: 25px;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            text-align: center;
+            max-width: 900px;
+            margin: 0 auto 30px;
+        }
+
+        .workspace-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 25px;
+            padding: 20px;
+            background: #fff;
+            border-radius: 12px;
+            border: 2px solid #e8e8e8;
+            min-height: 200px;
+        }
+
+        .page-card {
+            background: #fff;
+            border: 2px solid #eee;
+            border-radius: 8px;
+            padding: 10px;
+            cursor: grab;
+            position: relative;
+            transition: all 0.2s ease;
+            user-select: none;
+        }
+
+        .page-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-3px);
+        }
+
+        .page-card.dragging {
+            opacity: 0.4;
+            transform: scale(0.9);
+        }
+
+        .page-card.drag-over {
+            border-left: 5px solid var(--primary);
+            padding-left: 5px;
+        }
+
+        canvas {
+            width: 100%;
+            height: auto;
+            border-radius: 4px;
+            display: block;
+            transition: transform 0.3s;
+        }
+
+        .badge {
+            position: absolute;
+            top: -10px;
+            left: -10px;
+            background: #666;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            z-index: 5;
+        }
+
+        .file-label {
+            display: block;
+            font-size: 10px;
+            color: #999;
+            margin-top: 5px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .rotate-btn {
+            position: absolute;
+            bottom: 5px;
+            right: 5px;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+
+        .split-indicator {
+            display: none;
+            position: absolute;
+            top: 50%;
+            right: -18px;
+            transform: translateY(-50%);
+            color: var(--split);
+            font-size: 20px;
+            font-weight: bold;
+            z-index: 10;
+        }
+
+        .page-card.split-active {
+            border-right: 3px solid var(--split);
+        }
+
+        .page-card.split-active .split-indicator {
+            display: block;
+        }
+
+        .btn {
+            padding: 12px 28px;
+            border-radius: 30px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 15px;
+            transition: background 0.2s;
+        }
+
+        .btn-main {
+            background: black;
+            color: white;
+        }
+
+        .btn-main:hover {
+            background: lightgray;
+        }
+
+        .btn-clear {
+            background: #eee;
+            color: #666;
+            margin-left: 10px;
+        }
+
+        #loading {
+            display: none;
+            margin-left: 10px;
+            color: var(--primary);
+            font-weight: bold;
+        }
+
+        /* --- 自定义弹窗样式 --- */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            /* 初始隐藏 */
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            max-width: 320px;
+            width: 90%;
+        }
+
+        .modal-content h3 {
+            margin-top: 0;
+            color: #333;
+        }
+
+        .modal-content p {
+            color: #666;
+            margin: 15px 0 25px;
+        }
+
+        .modal-close-btn {
+            background: black;
+            color: white;
+            border: none;
+            padding: 10px 30px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="setup-card">
+        <h2>PDF Reorder, Rotate & Split</h2>
+        <p>Upload multiple files. Drag pages to reorder/merge. Click page to Split.</p>
+
+        <div style="margin: 20px 0;">
+            <input type="file" id="file-selector" accept="application/pdf" multiple>
+            <button class="btn btn-main" onclick="exportPDF()">Export & Merge</button>
+            <button class="btn btn-clear" onclick="location.reload()">Clear All</button>
+            <span id="loading">Processing...</span>
+        </div>
+    </div>
+
+    <div id="workspace" class="workspace-grid"></div>
+
+    <div id="customAlert" class="modal-overlay">
+        <div class="modal-content">
+            <h3 id="alertTitle">Alert</h3>
+            <p id="alertMessage"></p>
+            <button class="modal-close-btn" onclick="closeAlert()">OK</button>
+        </div>
+    </div>
+
+    <script>
+        const { PDFDocument, degrees } = PDFLib;
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+
+        // --- 弹窗控制函数 ---
+        function showAlert(msg, title = "Alert") {
+            document.getElementById('alertTitle').innerText = title;
+            document.getElementById('alertMessage').innerText = msg;
+            document.getElementById('customAlert').style.display = 'flex';
+        }
+
+        function closeAlert() {
+            document.getElementById('customAlert').style.display = 'none';
+        }
+
+        // Stores multiple PDF sources
+        let sourcePdfs = new Map(); // id -> { buffer, pdfjsDoc }
+        let state = {
+            pageOrder: [], // { fileId, originalIdx, rotation, fileName }
+            splits: new Set()
+        };
+
+        document.getElementById('file-selector').addEventListener('change', async (e) => {
+            const files = Array.from(e.target.files);
+            if (files.length === 0) return;
+
+            document.getElementById('loading').style.display = 'inline';
+
+            for (const file of files) {
+                const fileId = crypto.randomUUID();
+                const buffer = await file.arrayBuffer();
+                const pdfjsDoc = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+
+                sourcePdfs.set(fileId, { buffer, pdfjsDoc });
+
+                // Append pages from this file to the workspace
+                for (let i = 0; i < pdfjsDoc.numPages; i++) {
+                    state.pageOrder.push({
+                        fileId: fileId,
+                        originalIdx: i,
+                        rotation: 0,
+                        fileName: file.name
+                    });
+                }
+            }
+
+            document.getElementById('loading').style.display = 'none';
+            renderUI();
+        });
+
+        function renderUI() {
+            const container = document.getElementById('workspace');
+            container.innerHTML = '';
+
+            state.pageOrder.forEach((pageObj, currentPos) => {
+                const card = document.createElement('div');
+                card.className = `page-card ${state.splits.has(currentPos) ? 'split-active' : ''}`;
+                card.draggable = true;
+
+                const canvasId = `canvas-${pageObj.fileId}-${pageObj.originalIdx}`;
+
+                card.innerHTML = `
+                    <div class="badge">#${currentPos + 1}</div>
+                    <div class="split-indicator">✂️</div>
+                    <canvas id="${canvasId}"></canvas>
+                    <button class="rotate-btn" title="Rotate 90°">🔄</button>
+                    <div class="file-label" title="${pageObj.fileName}">${pageObj.fileName} (P${pageObj.originalIdx + 1})</div>
+                `;
+
+                card.querySelector('.rotate-btn').onclick = (e) => {
+                    e.stopPropagation();
+                    pageObj.rotation = (pageObj.rotation + 90) % 360;
+                    renderUI();
+                };
+
+                card.onclick = () => {
+                    if (currentPos === state.pageOrder.length - 1) return;
+                    state.splits.has(currentPos) ? state.splits.delete(currentPos) : state.splits.add(currentPos);
+                    renderUI();
+                };
+
+                card.ondragstart = (e) => {
+                    e.dataTransfer.setData('text/plain', currentPos);
+                    card.classList.add('dragging');
+                };
+                card.ondragover = (e) => { e.preventDefault(); card.classList.add('drag-over'); };
+                card.ondragleave = () => card.classList.remove('drag-over');
+                card.ondrop = (e) => {
+                    e.preventDefault();
+                    const fromPos = parseInt(e.dataTransfer.getData('text/plain'));
+                    const item = state.pageOrder.splice(fromPos, 1)[0];
+                    state.pageOrder.splice(currentPos, 0, item);
+                    state.splits.clear();
+                    renderUI();
+                };
+
+                container.appendChild(card);
+                drawThumb(pageObj, canvasId);
+            });
+        }
+
+        async function drawThumb(pageObj, canvasId) {
+            const source = sourcePdfs.get(pageObj.fileId);
+            const page = await source.pdfjsDoc.getPage(pageObj.originalIdx + 1);
+            const viewport = page.getViewport({ scale: 0.3 });
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            canvas.style.transform = `rotate(${pageObj.rotation}deg)`;
+            await page.render({ canvasContext: ctx, viewport }).promise;
+        }
+
+        async function exportPDF() {
+            // 已将 alert 换成自定义 showAlert
+            if (state.pageOrder.length === 0) return showAlert("Please upload at least one PDF.");
+
+            document.getElementById('loading').style.display = 'inline';
+
+            try {
+                const loadedPdfLibDocs = new Map();
+                for (let [id, source] of sourcePdfs) {
+                    const libDoc = await PDFDocument.load(source.buffer.slice(0));
+                    loadedPdfLibDocs.set(id, libDoc);
+                }
+
+                const sortedSplitPoints = Array.from(state.splits).sort((a, b) => a - b);
+                let startPos = 0;
+                const fileSegments = [];
+
+                for (const point of sortedSplitPoints) {
+                    fileSegments.push(state.pageOrder.slice(startPos, point + 1));
+                    startPos = point + 1;
+                }
+                fileSegments.push(state.pageOrder.slice(startPos));
+
+                for (let i = 0; i < fileSegments.length; i++) {
+                    const newDoc = await PDFDocument.create();
+                    const segmentData = fileSegments[i];
+
+                    for (const pageObj of segmentData) {
+                        const srcLibDoc = loadedPdfLibDocs.get(pageObj.fileId);
+                        const [copiedPage] = await newDoc.copyPages(srcLibDoc, [pageObj.originalIdx]);
+
+                        if (pageObj.rotation !== 0) {
+                            copiedPage.setRotation(degrees(pageObj.rotation));
+                        }
+                        newDoc.addPage(copiedPage);
+                    }
+
+                    const bytes = await newDoc.save();
+                    const blob = new Blob([bytes], { type: 'application/pdf' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `Merged_Part_${i + 1}.pdf`;
+                    a.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                }
+            } catch (err) {
+                console.error(err);
+                // 这里也换成了自定义弹窗
+                showAlert("Export error: " + err.message, "Error");
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+    </script>
+</body>
+
+</html>
