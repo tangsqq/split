@@ -136,6 +136,42 @@
             margin: 0 auto;
         }
 
+        /* Rename Section Header */
+        .segment-header {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: white;
+            padding: 15px 25px;
+            border-radius: 18px;
+            margin-top: 15px;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+        }
+
+        .rename-input {
+            border: 1px solid #cbd5e1;
+            border-radius: 10px;
+            padding: 8px 15px;
+            font-size: 14px;
+            font-family: inherit;
+            flex-grow: 1;
+            max-width: 400px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .rename-input:focus {
+            border-color: var(--primary);
+        }
+
+        .segment-label {
+            font-weight: 700;
+            color: #1e293b;
+            font-size: 14px;
+        }
+
         .page-card {
             background: white;
             border: 1px solid #e2e8f0;
@@ -408,7 +444,8 @@
         let sourcePdfs = new Map();
         let state = {
             pageOrder: [],
-            splits: new Set()
+            splits: new Set(),
+            segmentNames: {} // Stores custom names for each segment
         };
 
         document.getElementById('file-selector').addEventListener('change', async (e) => {
@@ -436,6 +473,28 @@
         function renderUI() {
             const container = document.getElementById('workspace');
             container.innerHTML = '';
+
+            let segmentIndex = 0;
+
+            // Helper to create the renaming bar
+            const createRenameBar = (idx) => {
+                const div = document.createElement('div');
+                div.className = 'segment-header';
+                const defaultName = `Document_Part_${idx + 1}`;
+                div.innerHTML = `
+                    <span class="segment-label">📄 File ${idx + 1} Name:</span>
+                    <input type="text" class="rename-input" 
+                        placeholder="Enter file name..." 
+                        value="${state.segmentNames[idx] || defaultName}"
+                        oninput="state.segmentNames[${idx}] = this.value">
+                `;
+                return div;
+            };
+
+            // Always add the first naming bar if there are pages
+            if (state.pageOrder.length > 0) {
+                container.appendChild(createRenameBar(segmentIndex++));
+            }
 
             state.pageOrder.forEach((pageObj, currentPos) => {
                 const card = document.createElement('div');
@@ -465,7 +524,7 @@
 
                 // RIGHT CLICK -> SPLIT
                 card.oncontextmenu = (e) => {
-                    e.preventDefault(); // Stop default browser menu
+                    e.preventDefault();
                     if (currentPos === state.pageOrder.length - 1) return;
                     state.splits.has(currentPos) ? state.splits.delete(currentPos) : state.splits.add(currentPos);
                     renderUI();
@@ -483,6 +542,7 @@
                     e.stopPropagation();
                     state.pageOrder.splice(currentPos, 1);
                     state.splits.clear();
+                    state.segmentNames = {}; // Reset names on structural change
                     renderUI();
                 };
 
@@ -499,18 +559,24 @@
                     const item = state.pageOrder.splice(fromPos, 1)[0];
                     state.pageOrder.splice(currentPos, 0, item);
                     state.splits.clear();
+                    state.segmentNames = {};
                     renderUI();
                 };
 
                 container.appendChild(card);
                 drawThumb(pageObj, canvasId);
+
+                // Add a new rename bar if this card has a split point
+                if (state.splits.has(currentPos)) {
+                    container.appendChild(createRenameBar(segmentIndex++));
+                }
             });
         }
 
         async function drawThumb(pageObj, canvasId) {
             const source = sourcePdfs.get(pageObj.fileId);
             const page = await source.pdfjsDoc.getPage(pageObj.originalIdx + 1);
-            const viewport = page.getViewport({ scale: 0.8 }); 
+            const viewport = page.getViewport({ scale: 0.8 });
             const canvas = document.getElementById(canvasId);
             if (!canvas) return;
             const ctx = canvas.getContext('2d');
@@ -554,9 +620,15 @@
                     const bytes = await newDoc.save();
                     const blob = new Blob([bytes], { type: 'application/pdf' });
                     const url = URL.createObjectURL(blob);
+
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = `Document_Part_${i + 1}.pdf`;
+
+                    // Use custom name if exists, else fallback to default
+                    let customName = state.segmentNames[i] || `Document_Part_${i + 1}`;
+                    if (!customName.toLowerCase().endsWith('.pdf')) customName += '.pdf';
+
+                    a.download = customName;
                     a.click();
                     setTimeout(() => URL.revokeObjectURL(url), 1000);
                 }
@@ -571,4 +643,3 @@
 </body>
 
 </html>
-
