@@ -9,6 +9,8 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
     <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <style>
         :root {
             --primary: #2563eb;
@@ -136,7 +138,6 @@
             margin: 0 auto;
         }
 
-        /* Rename Section Header */
         .segment-header {
             grid-column: 1 / -1;
             display: flex;
@@ -330,7 +331,6 @@
             }
         }
 
-        /* Modal Overlay for Alerts & Preview */
         .modal-overlay {
             position: fixed;
             top: 0;
@@ -376,6 +376,32 @@
             font-weight: 600;
             width: 100%;
         }
+
+        /* Home 按钮样式 */
+        .home-btn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            color: #1e293b;
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            z-index: 10000;
+            /* 确保在最上层 */
+        }
+
+        .home-btn:hover {
+            transform: scale(1.1);
+            color: lightgray;
+        }
+
+        .home-btn i {
+            font-size: 40px;
+        }
     </style>
 </head>
 
@@ -383,7 +409,7 @@
 
     <div class="setup-card">
         <h2>PDF Reorder, Rotate & Split</h2>
-        <p>Left-Click: Preview | Right-Click: Split/Join | Drag: Reorder</p>
+        <p>Support PDF/Excel | Right-Click: Split | Left-Click: Preview | Drag: Reorder</p>
 
         <div style="display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap;">
             <label for="file-selector" class="file-upload-label">
@@ -391,9 +417,9 @@
                     xmlns="http://www.w3.org/2000/svg">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
                 </svg>
-                Choose PDFs
+                Choose PDF/Excel
             </label>
-            <input type="file" id="file-selector" accept="application/pdf" multiple>
+            <input type="file" id="file-selector" accept="application/pdf, .xlsx, .xls" multiple>
 
             <button class="btn btn-main" onclick="exportPDF()">Export</button>
             <button class="btn btn-clear" onclick="location.reload()">Clear All</button>
@@ -414,6 +440,10 @@
     <div id="previewModal" class="modal-overlay" onclick="closePreview()">
         <img id="previewImage" src="">
     </div>
+
+    <a href="index.html" class="home-btn" title="Back to Home">
+        <i class="fa fa-home"></i>
+    </a>
 
     <script>
         const { PDFDocument, degrees } = PDFLib;
@@ -445,44 +475,81 @@
         let state = {
             pageOrder: [],
             splits: new Set(),
-            segmentNames: {} // Stores custom names for each segment
+            segmentNames: {}
         };
 
         document.getElementById('file-selector').addEventListener('change', async (e) => {
             const files = Array.from(e.target.files);
             if (files.length === 0) return;
             document.getElementById('loading').style.display = 'inline';
+
             for (const file of files) {
                 const fileId = crypto.randomUUID();
                 const buffer = await file.arrayBuffer();
-                const pdfjsDoc = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
-                sourcePdfs.set(fileId, { buffer, pdfjsDoc });
-                for (let i = 0; i < pdfjsDoc.numPages; i++) {
-                    state.pageOrder.push({
-                        fileId: fileId,
-                        originalIdx: i,
-                        rotation: 0,
-                        fileName: file.name
-                    });
+
+                // 处理 Excel 文件
+                if (file.name.match(/\.(xlsx|xls)$/i)) {
+                    const workbook = XLSX.read(buffer);
+                    for (let sheetName of workbook.SheetNames) {
+                        const worksheet = workbook.Sheets[sheetName];
+                        const html = XLSX.utils.sheet_to_html(worksheet);
+                        // 将表格转为临时 Canvas 用于预览
+                        const canvas = await excelToCanvas(html);
+                        state.pageOrder.push({
+                            fileId: fileId,
+                            type: 'excel',
+                            imgData: canvas.toDataURL('image/jpeg', 0.9),
+                            originalIdx: sheetName,
+                            rotation: 0,
+                            fileName: `${file.name} (${sheetName})`,
+                            canvas: canvas
+                        });
+                    }
+                }
+                // 处理 PDF 文件
+                else {
+                    const pdfjsDoc = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+                    sourcePdfs.set(fileId, { buffer, pdfjsDoc });
+                    for (let i = 0; i < pdfjsDoc.numPages; i++) {
+                        state.pageOrder.push({
+                            fileId: fileId,
+                            type: 'pdf',
+                            originalIdx: i,
+                            rotation: 0,
+                            fileName: file.name
+                        });
+                    }
                 }
             }
             document.getElementById('loading').style.display = 'none';
             renderUI();
         });
 
+        // 辅助：Excel HTML 转 Canvas
+        async function excelToCanvas(html) {
+            const wrap = document.createElement('div');
+            wrap.style.position = 'absolute';
+            wrap.style.left = '-9999px';
+            wrap.style.padding = '20px';
+            wrap.style.background = 'white';
+            wrap.innerHTML = `<style>table{border-collapse:collapse;font-family:sans-serif;} td{border:1px solid #ccc;padding:8px;}</style>${html}`;
+            document.body.appendChild(wrap);
+            const canvas = await html2canvas(wrap);
+            document.body.removeChild(wrap);
+            return canvas;
+        }
+
         function renderUI() {
             const container = document.getElementById('workspace');
             container.innerHTML = '';
-
             let segmentIndex = 0;
 
-            // Helper to create the renaming bar
             const createRenameBar = (idx) => {
                 const div = document.createElement('div');
                 div.className = 'segment-header';
                 const defaultName = `Document_Part_${idx + 1}`;
                 div.innerHTML = `
-                    <span class="segment-label">📄 File ${idx + 1} Name:</span>
+                    <span class="segment-label">File ${idx + 1} Name:</span>
                     <input type="text" class="rename-input" 
                         placeholder="Enter file name..." 
                         value="${state.segmentNames[idx] || defaultName}"
@@ -491,7 +558,6 @@
                 return div;
             };
 
-            // Always add the first naming bar if there are pages
             if (state.pageOrder.length > 0) {
                 container.appendChild(createRenameBar(segmentIndex++));
             }
@@ -512,17 +578,12 @@
                     <button class="rotate-btn" title="Rotate 90°">
                         <i class="fa fa-rotate-right"></i>
                     </button>
-                    <div class="file-label" title="${pageObj.fileName}">${pageObj.fileName} (P${pageObj.originalIdx + 1})</div>
+                    <div class="file-label" title="${pageObj.fileName}">${pageObj.fileName}</div>
                 `;
 
                 const canvas = card.querySelector('canvas');
+                card.onclick = () => showPreview(canvas);
 
-                // LEFT CLICK -> PREVIEW
-                card.onclick = (e) => {
-                    showPreview(canvas);
-                };
-
-                // RIGHT CLICK -> SPLIT
                 card.oncontextmenu = (e) => {
                     e.preventDefault();
                     if (currentPos === state.pageOrder.length - 1) return;
@@ -530,23 +591,20 @@
                     renderUI();
                 };
 
-                // ROTATE
                 card.querySelector('.rotate-btn').onclick = (e) => {
                     e.stopPropagation();
                     pageObj.rotation = (pageObj.rotation + 90) % 360;
                     renderUI();
                 };
 
-                // DELETE
                 card.querySelector('.delete-btn').onclick = (e) => {
                     e.stopPropagation();
                     state.pageOrder.splice(currentPos, 1);
                     state.splits.clear();
-                    state.segmentNames = {}; // Reset names on structural change
+                    state.segmentNames = {};
                     renderUI();
                 };
 
-                // DRAG & DROP
                 card.ondragstart = (e) => {
                     e.dataTransfer.setData('text/plain', currentPos);
                     card.classList.add('dragging');
@@ -564,9 +622,18 @@
                 };
 
                 container.appendChild(card);
-                drawThumb(pageObj, canvasId);
 
-                // Add a new rename bar if this card has a split point
+                // 根据类型绘图
+                if (pageObj.type === 'excel') {
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = pageObj.canvas.width;
+                    canvas.height = pageObj.canvas.height;
+                    canvas.style.transform = `rotate(${pageObj.rotation}deg)`;
+                    ctx.drawImage(pageObj.canvas, 0, 0);
+                } else {
+                    drawThumb(pageObj, canvasId);
+                }
+
                 if (state.splits.has(currentPos)) {
                     container.appendChild(createRenameBar(segmentIndex++));
                 }
@@ -587,7 +654,7 @@
         }
 
         async function exportPDF() {
-            if (state.pageOrder.length === 0) return showAlert("Please upload at least one PDF.");
+            if (state.pageOrder.length === 0) return showAlert("Please upload at least one file.");
             document.getElementById('loading').style.display = 'inline';
             try {
                 const loadedPdfLibDocs = new Map();
@@ -610,24 +677,26 @@
                     const newDoc = await PDFDocument.create();
                     const segmentData = fileSegments[i];
                     for (const pageObj of segmentData) {
-                        const srcLibDoc = loadedPdfLibDocs.get(pageObj.fileId);
-                        const [copiedPage] = await newDoc.copyPages(srcLibDoc, [pageObj.originalIdx]);
-                        if (pageObj.rotation !== 0) {
-                            copiedPage.setRotation(degrees(pageObj.rotation));
+                        if (pageObj.type === 'excel') {
+                            // 将 Excel Canvas 图片嵌入 PDF
+                            const img = await newDoc.embedJpg(pageObj.imgData);
+                            const page = newDoc.addPage([img.width, img.height]);
+                            page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+                            if (pageObj.rotation !== 0) page.setRotation(degrees(pageObj.rotation));
+                        } else {
+                            const srcLibDoc = loadedPdfLibDocs.get(pageObj.fileId);
+                            const [copiedPage] = await newDoc.copyPages(srcLibDoc, [pageObj.originalIdx]);
+                            if (pageObj.rotation !== 0) copiedPage.setRotation(degrees(pageObj.rotation));
+                            newDoc.addPage(copiedPage);
                         }
-                        newDoc.addPage(copiedPage);
                     }
                     const bytes = await newDoc.save();
                     const blob = new Blob([bytes], { type: 'application/pdf' });
                     const url = URL.createObjectURL(blob);
-
                     const a = document.createElement('a');
                     a.href = url;
-
-                    // Use custom name if exists, else fallback to default
                     let customName = state.segmentNames[i] || `Document_Part_${i + 1}`;
                     if (!customName.toLowerCase().endsWith('.pdf')) customName += '.pdf';
-
                     a.download = customName;
                     a.click();
                     setTimeout(() => URL.revokeObjectURL(url), 1000);
