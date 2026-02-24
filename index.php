@@ -1,37 +1,45 @@
 <?php
-
-/**
- * 后端处理逻辑：处理 Excel 转换请求
- */
 if (isset($_FILES['excel_file'])) {
     header('Content-Type: application/json');
-    $uploadDir = sys_get_temp_dir() . '/pdf_tool_';
-    if (!is_dir($uploadDir)) mkdir($uploadDir);
+    
+    // 使用 Docker 容器内 www-data 有权限的目录
+    $uploadDir = '/var/www/html/temp_uploads'; 
+    if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
 
     $file = $_FILES['excel_file'];
-    $tmpFilePath = $uploadDir . '/' . uniqid() . '_' . $file['name'];
+    $fileId = uniqid();
+    $tmpFilePath = $uploadDir . '/' . $fileId . '_' . $file['name'];
     move_uploaded_file($file['tmp_name'], $tmpFilePath);
 
-    $sofficePath = '"C:\Program Files\LibreOffice\program\soffice.exe"';
-    $cmd = "$sofficePath --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath);
+    // Linux 环境下的命令
+    $sofficePath = 'libreoffice'; 
+    
+    // 关键点：指定 HOME 环境变量和独立的 UserInstallation 路径
+    // 这样可以规避大多数权限和并发导致的 "conversion failed" 错误
+    $cmd = "HOME=/tmp $sofficePath --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath) . " -env:UserInstallation=file:///tmp/libo_" . $fileId;
+    
     exec($cmd, $output, $returnVar);
 
     if ($returnVar === 0) {
-        $pdfPath = preg_replace('/\.(xlsx|xls|csv)$/i', '.pdf', $tmpFilePath);
+        // LibreOffice 默认生成的 PDF 文件名规则：原名（去后缀）+ .pdf
+        $pathInfo = pathinfo($tmpFilePath);
+        $pdfPath = $uploadDir . '/' . $pathInfo['filename'] . '.pdf';
+        
         if (file_exists($pdfPath)) {
             echo json_encode([
                 'success' => true,
                 'pdf_base64' => base64_encode(file_get_contents($pdfPath)),
                 'filename' => $file['name']
             ]);
+            @unlink($pdfPath); // 发送完毕后删除 PDF
         } else {
             echo json_encode(['success' => false, 'error' => 'PDF file not generated']);
         }
     } else {
-        echo json_encode(['success' => false, 'error' => 'LibreOffice conversion failed']);
+        // 如果失败，返回更多调试信息（可选）
+        echo json_encode(['success' => false, 'error' => 'LibreOffice conversion failed', 'debug' => $output]);
     }
     @unlink($tmpFilePath);
-    @unlink($pdfPath);
     exit;
 }
 ?>
@@ -705,3 +713,4 @@ if (isset($_FILES['excel_file'])) {
 </body>
 
 </html>
+
