@@ -1,45 +1,37 @@
 <?php
+
+/**
+ * 后端处理逻辑：处理 Excel 转换请求
+ */
 if (isset($_FILES['excel_file'])) {
     header('Content-Type: application/json');
-    
-    // 使用 Docker 容器内 www-data 有权限的目录
-    $uploadDir = '/var/www/html/temp_uploads'; 
-    if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
+    $uploadDir = sys_get_temp_dir() . '/pdf_tool_';
+    if (!is_dir($uploadDir)) mkdir($uploadDir);
 
     $file = $_FILES['excel_file'];
-    $fileId = uniqid();
-    $tmpFilePath = $uploadDir . '/' . $fileId . '_' . $file['name'];
+    $tmpFilePath = $uploadDir . '/' . uniqid() . '_' . $file['name'];
     move_uploaded_file($file['tmp_name'], $tmpFilePath);
 
-    // Linux 环境下的命令
-    $sofficePath = 'libreoffice'; 
-    
-    // 关键点：指定 HOME 环境变量和独立的 UserInstallation 路径
-    // 这样可以规避大多数权限和并发导致的 "conversion failed" 错误
-    $cmd = "HOME=/tmp $sofficePath --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath) . " -env:UserInstallation=file:///tmp/libo_" . $fileId;
-    
+    $sofficePath = '"C:\Program Files\LibreOffice\program\soffice.exe"';
+    $cmd = "$sofficePath --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath);
     exec($cmd, $output, $returnVar);
 
     if ($returnVar === 0) {
-        // LibreOffice 默认生成的 PDF 文件名规则：原名（去后缀）+ .pdf
-        $pathInfo = pathinfo($tmpFilePath);
-        $pdfPath = $uploadDir . '/' . $pathInfo['filename'] . '.pdf';
-        
+        $pdfPath = preg_replace('/\.(xlsx|xls|csv)$/i', '.pdf', $tmpFilePath);
         if (file_exists($pdfPath)) {
             echo json_encode([
                 'success' => true,
                 'pdf_base64' => base64_encode(file_get_contents($pdfPath)),
                 'filename' => $file['name']
             ]);
-            @unlink($pdfPath); // 发送完毕后删除 PDF
         } else {
             echo json_encode(['success' => false, 'error' => 'PDF file not generated']);
         }
     } else {
-        // 如果失败，返回更多调试信息（可选）
-        echo json_encode(['success' => false, 'error' => 'LibreOffice conversion failed', 'debug' => $output]);
+        echo json_encode(['success' => false, 'error' => 'LibreOffice conversion failed']);
     }
     @unlink($tmpFilePath);
+    @unlink($pdfPath);
     exit;
 }
 ?>
@@ -52,6 +44,7 @@ if (isset($_FILES['excel_file'])) {
     <title>PDF Reorder, Rotate & Split</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
@@ -636,19 +629,44 @@ if (isset($_FILES['excel_file'])) {
 
         async function exportPDF() {
             if (state.pageOrder.length === 0) return showAlert("No pages to export.");
-            document.getElementById('alertBtn').style.display = 'none';
-            showAlert("Exporting all parts...");
+
+            const btn = document.getElementById('alertBtn');
+            btn.style.display = 'none';
+            showAlert("Generating ZIP file...");
+
             try {
+                const zip = new JSZip();
                 const groups = splitIntoGroups();
+
                 for (let i = 0; i < groups.length; i++) {
                     const bytes = await generatePdfBlob(groups[i]);
-                    downloadBlob(bytes, state.segmentNames[i] || `Document_Part_${i + 1}`);
+                    const name = state.segmentNames[i] || `Document_Part_${i + 1}`;
+                    const fileName = name.toLowerCase().endsWith('.pdf') ? name : name + '.pdf';
+
+                    // 将 PDF 字节流添加到 ZIP 实例中
+                    zip.file(fileName, bytes);
                 }
-                showAlert("Success!");
+
+                // 生成 ZIP 文件并触发下载
+                const zipContent = await zip.generateAsync({
+                    type: "blob"
+                });
+                const zipName = "converted_documents.zip";
+
+                const url = URL.createObjectURL(zipContent);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = zipName;
+                a.click();
+
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                showAlert("ZIP Downloaded Successfully!");
             } catch (err) {
+                console.error(err);
                 showAlert("Export Error: " + err.message);
             }
-            document.getElementById('alertBtn').style.display = 'inline-block';
+
+            btn.style.display = 'inline-block';
         }
 
         function splitIntoGroups() {
@@ -713,4 +731,3 @@ if (isset($_FILES['excel_file'])) {
 </body>
 
 </html>
-
