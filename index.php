@@ -5,60 +5,33 @@
  */
 if (isset($_FILES['excel_file'])) {
     header('Content-Type: application/json');
-    
-    // 1. 设置临时目录 (Linux/Windows 通用)
-    $uploadDir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'pdf_tool_';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0777, true);
-    }
+    $uploadDir = sys_get_temp_dir() . '/pdf_tool_';
+    if (!is_dir($uploadDir)) mkdir($uploadDir);
 
     $file = $_FILES['excel_file'];
-    // 过滤掉文件名中的特殊字符，防止命令注入
-    $safeFileName = preg_replace('/[^a-zA-Z0-9._-]/', '_', $file['name']);
-    $tmpFilePath = $uploadDir . DIRECTORY_SEPARATOR . uniqid() . '_' . $safeFileName;
-    
+    $tmpFilePath = $uploadDir . '/' . uniqid() . '_' . $file['name'];
     move_uploaded_file($file['tmp_name'], $tmpFilePath);
 
-    // 2. 自动识别系统环境并设置命令
-    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-        // --- 本地 Windows 环境 ---
-        $sofficePath = '"C:\Program Files\LibreOffice\program\soffice.exe"';
-        $cmd = "$sofficePath --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath);
-    } else {
-        // --- Render / Docker (Linux) 环境 ---
-        // 关键点：export HOME=/tmp 解决了 Linux 无家目录权限问题；2>&1 用于捕获详细错误
-        $cmd = "export HOME=/tmp && libreoffice --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath) . " 2>&1";
-    }
-
+    $sofficePath = '"C:\Program Files\LibreOffice\program\soffice.exe"';
+    $cmd = "$sofficePath --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath);
     exec($cmd, $output, $returnVar);
 
-    // 3. 处理转换结果
     if ($returnVar === 0) {
-        // LibreOffice 默认会将原后缀替换为 .pdf
-        $pathInfo = pathinfo($tmpFilePath);
-        $pdfPath = $uploadDir . DIRECTORY_SEPARATOR . $pathInfo['filename'] . '.pdf';
-
+        $pdfPath = preg_replace('/\.(xlsx|xls|csv)$/i', '.pdf', $tmpFilePath);
         if (file_exists($pdfPath)) {
             echo json_encode([
                 'success' => true,
                 'pdf_base64' => base64_encode(file_get_contents($pdfPath)),
                 'filename' => $file['name']
             ]);
-            @unlink($pdfPath); // 发送后立即清理
         } else {
-            echo json_encode(['success' => false, 'error' => 'PDF generated but not found', 'debug' => $pdfPath]);
+            echo json_encode(['success' => false, 'error' => 'PDF file not generated']);
         }
     } else {
-        // 如果失败，返回详细日志
-        echo json_encode([
-            'success' => false, 
-            'error' => 'LibreOffice conversion failed', 
-            'details' => $output,
-            'os' => PHP_OS
-        ]);
+        echo json_encode(['success' => false, 'error' => 'LibreOffice conversion failed']);
     }
-
-    @unlink($tmpFilePath); // 清理原始上传文件
+    @unlink($tmpFilePath);
+    @unlink($pdfPath);
     exit;
 }
 ?>
@@ -69,7 +42,7 @@ if (isset($_FILES['excel_file'])) {
     <meta charset="UTF-8">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📑</text></svg>">
     <title>PDF Reorder, Rotate & Split</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
     <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -90,6 +63,7 @@ if (isset($_FILES['excel_file'])) {
             margin: 0;
             padding: 40px 20px;
             color: #1e293b;
+            min-height: 100vh;
         }
 
         .setup-card {
@@ -159,18 +133,6 @@ if (isset($_FILES['excel_file'])) {
             color: #0f172a;
         }
 
-        .file-label {
-            display: block;
-            font-size: 11px;
-            font-weight: 500;
-            color: #94a3b8;
-            margin-top: 12px;
-            padding: 0 4px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
         #file-selector {
             display: none;
         }
@@ -199,10 +161,26 @@ if (isset($_FILES['excel_file'])) {
             padding: 30px;
             background: rgba(255, 255, 255, 0.5);
             border-radius: 25px;
-            border: 2px dashed #e2e8f0;
-            min-height: 300px;
+            border: 2px dashed #cbd5e1;
+            min-height: 400px;
             max-width: 1200px;
             margin: 0 auto;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .drop-hint {
+            grid-column: 1 / -1;
+            text-align: center;
+            color: #94a3b8;
+            padding-top: 150px;
+            pointer-events: none;
+        }
+
+        .drop-hint i {
+            font-size: 50px;
+            margin-bottom: 15px;
+            display: block;
         }
 
         .segment-header {
@@ -326,35 +304,6 @@ if (isset($_FILES['excel_file'])) {
             padding: 2px;
         }
 
-        #loading {
-            display: none;
-            margin-left: 15px;
-            color: var(--primary);
-            animation: pulse 1.5s infinite;
-        }
-
-        @keyframes pulse {
-
-            0%,
-            100% {
-                opacity: 0.5;
-            }
-
-            50% {
-                opacity: 1;
-            }
-        }
-
-        .modal-close-btn {
-            margin-top: 20px;
-            padding: 10px 20px;
-            background: black;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            cursor: pointer;
-        }
-
         .modal-overlay {
             position: fixed;
             top: 0;
@@ -376,6 +325,16 @@ if (isset($_FILES['excel_file'])) {
             text-align: center;
             max-width: 360px;
             width: 90%;
+        }
+
+        .modal-close-btn {
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: black;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
         }
 
         #previewModal {
@@ -421,13 +380,17 @@ if (isset($_FILES['excel_file'])) {
                 Choose PDF/Excel
             </label>
             <input type="file" id="file-selector" accept="application/pdf, .xlsx, .xls" multiple>
-            <button class="btn btn-main" onclick="exportPDF()">Export</button>
+            <button class="btn btn-main" onclick="exportPDF()">Download All</button>
             <button class="btn btn-clear" onclick="location.reload()">Clear All</button>
-            <span id="loading">Converting to PDF...</span>
         </div>
     </div>
 
-    <div id="workspace" class="workspace-grid"></div>
+    <div id="workspace" class="workspace-grid">
+        <div class="drop-hint" id="drop-hint">
+            <i class="fa-solid fa-file-arrow-up" style="color: rgb(210, 211, 214);"></i>
+            Drag and Drop PDF or Excel files here
+        </div>
+    </div>
 
     <div id="customAlert" class="modal-overlay">
         <div class="modal-content">
@@ -459,19 +422,43 @@ if (isset($_FILES['excel_file'])) {
             segmentNames: {}
         };
 
-        // 核心修复函数：深度复制 Buffer，防止被 Detach
         function cloneBuffer(buffer) {
             const dst = new ArrayBuffer(buffer.byteLength);
             new Uint8Array(dst).set(new Uint8Array(buffer));
             return dst;
         }
 
-        document.getElementById('file-selector').addEventListener('change', async (e) => {
-            const files = Array.from(e.target.files);
+        // --- 拖拽功能实现 ---
+        const workspace = document.getElementById('workspace');
+
+        // 1. 阻止浏览器默认打开文件的行为
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            document.addEventListener(eventName, e => {
+                e.preventDefault();
+                e.stopPropagation();
+            }, false);
+        });
+
+        // 2. 视觉反馈
+        workspace.addEventListener('dragover', () => workspace.classList.add('drag-active'));
+        workspace.addEventListener('dragleave', () => workspace.classList.remove('drag-active'));
+        workspace.addEventListener('drop', (e) => {
+            workspace.classList.remove('drag-active');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) handleFiles(Array.from(files));
+        });
+
+        // 3. 点击上传按钮
+        document.getElementById('file-selector').addEventListener('change', (e) => {
+            handleFiles(Array.from(e.target.files));
+        });
+
+        // 4. 统一处理文件函数
+        async function handleFiles(files) {
             if (files.length === 0) return;
 
             document.getElementById('alertBtn').style.display = 'none';
-            showAlert("Converting to PDF...");
+            showAlert("Processing files...");
 
             for (const file of files) {
                 const fileId = crypto.randomUUID();
@@ -486,22 +473,21 @@ if (isset($_FILES['excel_file'])) {
                         });
                         const result = await response.json();
                         if (!result.success) throw new Error(result.error);
-
                         const binaryStr = atob(result.pdf_base64);
                         const bytes = new Uint8Array(binaryStr.length);
                         for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
                         rawBuffer = bytes.buffer;
-                    } else {
+                    } else if (file.type === "application/pdf") {
                         rawBuffer = await file.arrayBuffer();
+                    } else {
+                        continue; // 跳过非PDF/Excel文件
                     }
 
-                    // 1. 先存入原始数据的物理拷贝
                     sourcePdfs.set(fileId, {
                         buffer: cloneBuffer(rawBuffer),
                         pdfjsDoc: null
                     });
 
-                    // 2. 用另一个物理拷贝去给 PDF.js 渲染（渲染后这个 buffer 可能会被分离）
                     const renderBuffer = cloneBuffer(rawBuffer);
                     const pdfjsDoc = await pdfjsLib.getDocument({
                         data: renderBuffer
@@ -518,19 +504,24 @@ if (isset($_FILES['excel_file'])) {
                     }
                 } catch (err) {
                     console.error(err);
-                    alert("Error: " + err.message);
+                    alert("Error processing " + file.name + ": " + err.message);
                 }
             }
             document.getElementById('alertBtn').style.display = 'inline-block';
             closeAlert();
             renderUI();
-        });
+        }
 
         function renderUI() {
             const container = document.getElementById('workspace');
             container.innerHTML = '';
-            let segmentIndex = 0;
 
+            if (state.pageOrder.length === 0) {
+                container.innerHTML = `<div class="drop-hint"><i class="fa fa-cloud-upload"></i>Drag and Drop PDF or Excel files here</div>`;
+                return;
+            }
+
+            let segmentIndex = 0;
             const createRenameBar = (idx) => {
                 const div = document.createElement('div');
                 div.className = 'segment-header';
@@ -538,11 +529,12 @@ if (isset($_FILES['excel_file'])) {
                 div.innerHTML = `
                     <span class="segment-label">File ${idx + 1}:</span>
                     <input type="text" class="rename-input" value="${state.segmentNames[idx] || defaultName}" oninput="state.segmentNames[${idx}] = this.value">
+                    <button class="btn btn-main" style="height: 34px; padding: 0 15px; border-radius: 20px; font-size: 12px;" onclick="downloadSingleGroup(${idx})">Download</button>
                 `;
                 return div;
             };
 
-            if (state.pageOrder.length > 0) container.appendChild(createRenameBar(segmentIndex++));
+            container.appendChild(createRenameBar(segmentIndex++));
 
             state.pageOrder.forEach((pageObj, currentPos) => {
                 const card = document.createElement('div');
@@ -555,7 +547,7 @@ if (isset($_FILES['excel_file'])) {
                     <button class="delete-btn" title="Delete Page"><i class="fa fa-times"></i></button>
                     <canvas id="${canvasId}"></canvas>
                     <button class="rotate-btn" title="Rotate 90°"><i class="fa fa-rotate-right"></i></button>
-                    <div class="file-label" title="${pageObj.fileName}">${pageObj.fileName}</div>
+                    <div class="file-label" style="font-size:11px; color:#94a3b8; margin-top:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${pageObj.fileName}">${pageObj.fileName}</div>
                 `;
 
                 card.onclick = () => showPreview(card.querySelector('canvas'));
@@ -582,11 +574,7 @@ if (isset($_FILES['excel_file'])) {
                     e.dataTransfer.setData('text/plain', currentPos);
                     card.classList.add('dragging');
                 };
-                card.ondragover = (e) => {
-                    e.preventDefault();
-                    card.classList.add('drag-over');
-                };
-                card.ondragleave = () => card.classList.remove('drag-over');
+                card.ondragover = (e) => e.preventDefault();
                 card.ondrop = (e) => {
                     const fromPos = parseInt(e.dataTransfer.getData('text/plain'));
                     const item = state.pageOrder.splice(fromPos, 1)[0];
@@ -605,7 +593,7 @@ if (isset($_FILES['excel_file'])) {
                 const source = sourcePdfs.get(pageObj.fileId);
                 const page = await source.pdfjsDoc.getPage(pageObj.originalIdx + 1);
                 const viewport = page.getViewport({
-                    scale: 2.0
+                    scale: 1.5
                 });
                 const canvas = document.getElementById(canvasId);
                 if (!canvas) return;
@@ -622,55 +610,76 @@ if (isset($_FILES['excel_file'])) {
             }
         }
 
+        async function downloadSingleGroup(index) {
+            if (state.pageOrder.length === 0) return;
+            document.getElementById('alertBtn').style.display = 'none';
+            showAlert("Preparing download...");
+            try {
+                const groups = splitIntoGroups();
+                const targetGroup = groups[index];
+                const bytes = await generatePdfBlob(targetGroup);
+                downloadBlob(bytes, state.segmentNames[index] || `Document_Part_${index + 1}`);
+                closeAlert();
+            } catch (err) {
+                showAlert("Error: " + err.message);
+            }
+            document.getElementById('alertBtn').style.display = 'inline-block';
+        }
+
         async function exportPDF() {
             if (state.pageOrder.length === 0) return showAlert("No pages to export.");
             document.getElementById('alertBtn').style.display = 'none';
-            showAlert("Exporting... Please do not close.");
-
+            showAlert("Exporting all parts...");
             try {
-                // 每次导出都创建全新的 PDFDocument 副本
-                const pdfLibDocs = new Map();
-                for (let [id, source] of sourcePdfs) {
-                    const doc = await PDFDocument.load(cloneBuffer(source.buffer));
-                    pdfLibDocs.set(id, doc);
-                }
-
-                const sortedSplits = Array.from(state.splits).sort((a, b) => a - b);
-                let start = 0;
-                const groups = [];
-                for (const point of sortedSplits) {
-                    groups.push(state.pageOrder.slice(start, point + 1));
-                    start = point + 1;
-                }
-                groups.push(state.pageOrder.slice(start));
-
+                const groups = splitIntoGroups();
                 for (let i = 0; i < groups.length; i++) {
-                    const newDoc = await PDFDocument.create();
-                    for (const pageObj of groups[i]) {
-                        const srcDoc = pdfLibDocs.get(pageObj.fileId);
-                        const [copiedPage] = await newDoc.copyPages(srcDoc, [pageObj.originalIdx]);
-                        if (pageObj.rotation !== 0) copiedPage.setRotation(degrees(pageObj.rotation));
-                        newDoc.addPage(copiedPage);
-                    }
-                    const bytes = await newDoc.save();
-                    const blob = new Blob([bytes], {
-                        type: 'application/pdf'
-                    });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    let name = state.segmentNames[i] || `Document_Part_${i + 1}`;
-                    a.download = name.toLowerCase().endsWith('.pdf') ? name : name + '.pdf';
-                    a.click();
-                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    const bytes = await generatePdfBlob(groups[i]);
+                    downloadBlob(bytes, state.segmentNames[i] || `Document_Part_${i + 1}`);
                 }
                 showAlert("Success!");
             } catch (err) {
-                console.error(err);
                 showAlert("Export Error: " + err.message);
-            } finally {
-                document.getElementById('alertBtn').style.display = 'inline-block';
             }
+            document.getElementById('alertBtn').style.display = 'inline-block';
+        }
+
+        function splitIntoGroups() {
+            const sortedSplits = Array.from(state.splits).sort((a, b) => a - b);
+            let start = 0;
+            const groups = [];
+            for (const point of sortedSplits) {
+                groups.push(state.pageOrder.slice(start, point + 1));
+                start = point + 1;
+            }
+            groups.push(state.pageOrder.slice(start));
+            return groups;
+        }
+
+        async function generatePdfBlob(group) {
+            const pdfLibDocs = new Map();
+            for (let [id, source] of sourcePdfs) {
+                pdfLibDocs.set(id, await PDFDocument.load(cloneBuffer(source.buffer)));
+            }
+            const newDoc = await PDFDocument.create();
+            for (const pageObj of group) {
+                const srcDoc = pdfLibDocs.get(pageObj.fileId);
+                const [copiedPage] = await newDoc.copyPages(srcDoc, [pageObj.originalIdx]);
+                if (pageObj.rotation !== 0) copiedPage.setRotation(degrees(pageObj.rotation));
+                newDoc.addPage(copiedPage);
+            }
+            return await newDoc.save();
+        }
+
+        function downloadBlob(bytes, filename) {
+            const blob = new Blob([bytes], {
+                type: 'application/pdf'
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename.toLowerCase().endsWith('.pdf') ? filename : filename + '.pdf';
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
 
         function showAlert(msg) {
@@ -696,4 +705,3 @@ if (isset($_FILES['excel_file'])) {
 </body>
 
 </html>
-
