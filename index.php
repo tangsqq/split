@@ -5,33 +5,60 @@
  */
 if (isset($_FILES['excel_file'])) {
     header('Content-Type: application/json');
-    $uploadDir = sys_get_temp_dir() . '/pdf_tool_';
-    if (!is_dir($uploadDir)) mkdir($uploadDir);
+    
+    // 1. 设置临时目录 (Linux/Windows 通用)
+    $uploadDir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'pdf_tool_';
+    if (!is_dir($uploadDir)) {
+        mkdir($uploadDir, 0777, true);
+    }
 
     $file = $_FILES['excel_file'];
-    $tmpFilePath = $uploadDir . '/' . uniqid() . '_' . $file['name'];
+    // 过滤掉文件名中的特殊字符，防止命令注入
+    $safeFileName = preg_replace('/[^a-zA-Z0-9._-]/', '_', $file['name']);
+    $tmpFilePath = $uploadDir . DIRECTORY_SEPARATOR . uniqid() . '_' . $safeFileName;
+    
     move_uploaded_file($file['tmp_name'], $tmpFilePath);
 
-    $sofficePath = '"C:\Program Files\LibreOffice\program\soffice.exe"';
-    $cmd = "$sofficePath --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath);
+    // 2. 自动识别系统环境并设置命令
+    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+        // --- 本地 Windows 环境 ---
+        $sofficePath = '"C:\Program Files\LibreOffice\program\soffice.exe"';
+        $cmd = "$sofficePath --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath);
+    } else {
+        // --- Render / Docker (Linux) 环境 ---
+        // 关键点：export HOME=/tmp 解决了 Linux 无家目录权限问题；2>&1 用于捕获详细错误
+        $cmd = "export HOME=/tmp && libreoffice --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath) . " 2>&1";
+    }
+
     exec($cmd, $output, $returnVar);
 
+    // 3. 处理转换结果
     if ($returnVar === 0) {
-        $pdfPath = preg_replace('/\.(xlsx|xls|csv)$/i', '.pdf', $tmpFilePath);
+        // LibreOffice 默认会将原后缀替换为 .pdf
+        $pathInfo = pathinfo($tmpFilePath);
+        $pdfPath = $uploadDir . DIRECTORY_SEPARATOR . $pathInfo['filename'] . '.pdf';
+
         if (file_exists($pdfPath)) {
             echo json_encode([
                 'success' => true,
                 'pdf_base64' => base64_encode(file_get_contents($pdfPath)),
                 'filename' => $file['name']
             ]);
+            @unlink($pdfPath); // 发送后立即清理
         } else {
-            echo json_encode(['success' => false, 'error' => 'PDF file not generated']);
+            echo json_encode(['success' => false, 'error' => 'PDF generated but not found', 'debug' => $pdfPath]);
         }
     } else {
-        echo json_encode(['success' => false, 'error' => 'LibreOffice conversion failed']);
+        // 如果失败，返回详细日志
+        echo json_encode([
+            'success' => false, 
+            'error' => 'LibreOffice conversion failed', 
+            'details' => $output,
+            'os' => PHP_OS
+        ]);
     }
-    @unlink($tmpFilePath);
-    @unlink($pdfPath);
+
+    @unlink($tmpFilePath); // 清理原始上传文件
     exit;
 }
 ?>
@@ -669,3 +696,4 @@ if (isset($_FILES['excel_file'])) {
 </body>
 
 </html>
+
