@@ -1,37 +1,58 @@
 <?php
-
-/**
- * 后端处理逻辑：处理 Excel 转换请求
- */
 if (isset($_FILES['excel_file'])) {
     header('Content-Type: application/json');
-    $uploadDir = sys_get_temp_dir() . '/pdf_tool_';
-    if (!is_dir($uploadDir)) mkdir($uploadDir);
+    
+    // 1. 对应 Dockerfile 中创建的目录，或使用系统临时目录
+    $uploadDir = '/tmp/pdf_tool_'; 
+    if (!is_dir($uploadDir)) {
+        mkdir($uploadDir, 0777, true);
+    }
 
     $file = $_FILES['excel_file'];
+    $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
     $tmpFilePath = $uploadDir . '/' . uniqid() . '_' . $file['name'];
     move_uploaded_file($file['tmp_name'], $tmpFilePath);
 
-    $sofficePath = '"C:\Program Files\LibreOffice\program\soffice.exe"';
-    $cmd = "$sofficePath --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath);
-    exec($cmd, $output, $returnVar);
+    // 支持的格式
+    $officeExtensions = ['xlsx', 'xls', 'csv', 'doc', 'docx', 'ppt', 'pptx'];
+    $imageExtensions = ['jpg', 'jpeg', 'png'];
 
-    if ($returnVar === 0) {
-        $pdfPath = preg_replace('/\.(xlsx|xls|csv)$/i', '.pdf', $tmpFilePath);
-        if (file_exists($pdfPath)) {
-            echo json_encode([
-                'success' => true,
-                'pdf_base64' => base64_encode(file_get_contents($pdfPath)),
-                'filename' => $file['name']
-            ]);
+    // 2. 【核心修改】在 Docker (Linux) 中，soffice 通常直接在环境变量中
+    // 且必须添加 --user-installation 参数防止权限冲突
+    $sofficePath = 'libreoffice'; 
+    $userConfigDir = '/tmp/libreoffice_user_' . uniqid();
+    
+    if (in_array($extension, $officeExtensions) || in_array($extension, $imageExtensions)) {
+        // 构建命令：指定输出目录，使用 headless 模式
+        $cmd = "$sofficePath \"-env:UserInstallation=file://$userConfigDir\" --headless --convert-to pdf --outdir " . escapeshellarg($uploadDir) . " " . escapeshellarg($tmpFilePath) . " 2>&1";
+        
+        exec($cmd, $output, $returnVar);
+
+        if ($returnVar === 0) {
+            $pdfPath = $uploadDir . '/' . pathinfo($tmpFilePath, PATHINFO_FILENAME) . '.pdf';
+
+            if (file_exists($pdfPath)) {
+                echo json_encode([
+                    'success' => true,
+                    'pdf_base64' => base64_encode(file_get_contents($pdfPath)),
+                    'filename' => $file['name']
+                ]);
+                @unlink($pdfPath);
+            } else {
+                echo json_encode(['success' => false, 'error' => 'PDF not generated. Debug: ' . implode("\n", $output)]);
+            }
         } else {
-            echo json_encode(['success' => false, 'error' => 'PDF file not generated']);
+            echo json_encode(['success' => false, 'error' => 'Conversion failed', 'debug' => $output]);
         }
     } else {
-        echo json_encode(['success' => false, 'error' => 'LibreOffice conversion failed']);
+        echo json_encode(['success' => false, 'error' => 'Unsupported format']);
     }
+
+    // 清理临时文件和 LibreOffice 产生的用户配置目录
     @unlink($tmpFilePath);
-    @unlink($pdfPath);
+    if (is_dir($userConfigDir)) {
+        exec("rm -rf " . escapeshellarg($userConfigDir));
+    }
     exit;
 }
 ?>
@@ -371,16 +392,16 @@ if (isset($_FILES['excel_file'])) {
 <body>
     <div class="setup-card">
         <h2>PDF Reorder, Rotate & Split</h2>
-        <p>Support PDF/Excel | Right-Click: Split | Left-Click: Preview | Drag: Reorder</p>
+        <p>Right-Click: Split | Left-Click: Preview | Drag: Reorder</p>
 
         <div style="display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap;">
             <label for="file-selector" class="file-upload-label">
                 <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
                 </svg>
-                Choose PDF/Excel
+                Choose Files
             </label>
-            <input type="file" id="file-selector" accept="application/pdf, .xlsx, .xls" multiple>
+            <input type="file" id="file-selector" accept="application/pdf, .xlsx, .xls, .doc, .docx, .ppt, .pptx, .jpg, .jpeg, .png" multiple>
             <button class="btn btn-main" onclick="exportPDF()">Download All</button>
             <button class="btn btn-clear" onclick="location.reload()">Clear All</button>
         </div>
@@ -389,7 +410,7 @@ if (isset($_FILES['excel_file'])) {
     <div id="workspace" class="workspace-grid">
         <div class="drop-hint" id="drop-hint">
             <i class="fa-solid fa-file-arrow-up" style="color: rgb(210, 211, 214);"></i>
-            Drag and Drop PDF or Excel files here
+            Drag and Drop files here
         </div>
     </div>
 
@@ -429,10 +450,8 @@ if (isset($_FILES['excel_file'])) {
             return dst;
         }
 
-        // --- 拖拽功能实现 ---
         const workspace = document.getElementById('workspace');
 
-        // 1. 阻止浏览器默认打开文件的行为
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             document.addEventListener(eventName, e => {
                 e.preventDefault();
@@ -440,7 +459,6 @@ if (isset($_FILES['excel_file'])) {
             }, false);
         });
 
-        // 2. 视觉反馈
         workspace.addEventListener('dragover', () => workspace.classList.add('drag-active'));
         workspace.addEventListener('dragleave', () => workspace.classList.remove('drag-active'));
         workspace.addEventListener('drop', (e) => {
@@ -449,12 +467,10 @@ if (isset($_FILES['excel_file'])) {
             if (files.length > 0) handleFiles(Array.from(files));
         });
 
-        // 3. 点击上传按钮
         document.getElementById('file-selector').addEventListener('change', (e) => {
             handleFiles(Array.from(e.target.files));
         });
 
-        // 4. 统一处理文件函数
         async function handleFiles(files) {
             if (files.length === 0) return;
 
@@ -465,9 +481,12 @@ if (isset($_FILES['excel_file'])) {
                 const fileId = crypto.randomUUID();
                 try {
                     let rawBuffer;
-                    if (file.name.match(/\.(xlsx|xls)$/i)) {
+                    // --- 前端：更新匹配正则表达式，包含 word, ppt 和图片 ---
+                    const needsConversion = file.name.match(/\.(xlsx|xls|doc|docx|ppt|pptx|jpg|jpeg|png)$/i);
+
+                    if (needsConversion) {
                         const formData = new FormData();
-                        formData.append('excel_file', file);
+                        formData.append('excel_file', file); // 保持参数名不变以兼容原有后端逻辑名
                         const response = await fetch('', {
                             method: 'POST',
                             body: formData
@@ -481,7 +500,7 @@ if (isset($_FILES['excel_file'])) {
                     } else if (file.type === "application/pdf") {
                         rawBuffer = await file.arrayBuffer();
                     } else {
-                        continue; // 跳过非PDF/Excel文件
+                        continue;
                     }
 
                     sourcePdfs.set(fileId, {
@@ -518,7 +537,7 @@ if (isset($_FILES['excel_file'])) {
             container.innerHTML = '';
 
             if (state.pageOrder.length === 0) {
-                container.innerHTML = `<div class="drop-hint"><i class="fa fa-cloud-upload"></i>Drag and Drop PDF or Excel files here</div>`;
+                container.innerHTML = `<div class="drop-hint"><i class="fa fa-cloud-upload"></i>Drag and Drop PDF, Office or Image files here</div>`;
                 return;
             }
 
@@ -642,12 +661,9 @@ if (isset($_FILES['excel_file'])) {
                     const bytes = await generatePdfBlob(groups[i]);
                     const name = state.segmentNames[i] || `Document_Part_${i + 1}`;
                     const fileName = name.toLowerCase().endsWith('.pdf') ? name : name + '.pdf';
-
-                    // 将 PDF 字节流添加到 ZIP 实例中
                     zip.file(fileName, bytes);
                 }
 
-                // 生成 ZIP 文件并触发下载
                 const zipContent = await zip.generateAsync({
                     type: "blob"
                 });
