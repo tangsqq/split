@@ -359,15 +359,43 @@ if (isset($_FILES['excel_file'])) {
             cursor: pointer;
         }
 
+        /* --- Updated Preview Styles --- */
         #previewModal {
-            background: rgba(0, 0, 0, 0.9);
+            background: rgba(0, 0, 0, 0.95);
         }
 
         #previewImage {
-            max-width: 95%;
-            max-height: 95vh;
+            max-width: 90%;
+            max-height: 90vh;
             box-shadow: 0 0 40px rgba(0, 0, 0, 0.8);
+            transition: transform 0.3s ease;
         }
+
+        .nav-arrow {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: none;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+            z-index: 10001;
+        }
+
+        .nav-arrow:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        #prevArrow { left: 30px; }
+        #nextArrow { right: 30px; }
 
         .home-btn {
             position: fixed;
@@ -383,9 +411,7 @@ if (isset($_FILES['excel_file'])) {
             z-index: 10000;
         }
 
-        .home-btn i {
-            font-size: 40px;
-        }
+        .home-btn i { font-size: 40px; }
     </style>
 </head>
 
@@ -423,7 +449,9 @@ if (isset($_FILES['excel_file'])) {
     </div>
 
     <div id="previewModal" class="modal-overlay" onclick="closePreview()">
+        <button class="nav-arrow" id="prevArrow" onclick="navigatePreview(-1, event)"><i class="fa fa-chevron-left"></i></button>
         <img id="previewImage" src="">
+        <button class="nav-arrow" id="nextArrow" onclick="navigatePreview(1, event)"><i class="fa fa-chevron-right"></i></button>
     </div>
 
     <a href="index.html" class="home-btn" title="Back to Home">
@@ -431,13 +459,11 @@ if (isset($_FILES['excel_file'])) {
     </a>
 
     <script>
-        const {
-            PDFDocument,
-            degrees
-        } = PDFLib;
+        const { PDFDocument, degrees } = PDFLib;
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
 
         let sourcePdfs = new Map();
+        let currentPreviewIdx = -1;
         let state = {
             pageOrder: [],
             splits: new Set(),
@@ -473,7 +499,6 @@ if (isset($_FILES['excel_file'])) {
 
         async function handleFiles(files) {
             if (files.length === 0) return;
-
             document.getElementById('alertBtn').style.display = 'none';
             showAlert("Processing files...");
 
@@ -481,16 +506,12 @@ if (isset($_FILES['excel_file'])) {
                 const fileId = crypto.randomUUID();
                 try {
                     let rawBuffer;
-                    // --- 前端：更新匹配正则表达式，包含 word, ppt 和图片 ---
                     const needsConversion = file.name.match(/\.(xlsx|xls|doc|docx|ppt|pptx|jpg|jpeg|png)$/i);
 
                     if (needsConversion) {
                         const formData = new FormData();
-                        formData.append('excel_file', file); // 保持参数名不变以兼容原有后端逻辑名
-                        const response = await fetch('', {
-                            method: 'POST',
-                            body: formData
-                        });
+                        formData.append('excel_file', file);
+                        const response = await fetch('', { method: 'POST', body: formData });
                         const result = await response.json();
                         if (!result.success) throw new Error(result.error);
                         const binaryStr = atob(result.pdf_base64);
@@ -509,9 +530,7 @@ if (isset($_FILES['excel_file'])) {
                     });
 
                     const renderBuffer = cloneBuffer(rawBuffer);
-                    const pdfjsDoc = await pdfjsLib.getDocument({
-                        data: renderBuffer
-                    }).promise;
+                    const pdfjsDoc = await pdfjsLib.getDocument({ data: renderBuffer }).promise;
                     sourcePdfs.get(fileId).pdfjsDoc = pdfjsDoc;
 
                     for (let i = 0; i < pdfjsDoc.numPages; i++) {
@@ -570,7 +589,7 @@ if (isset($_FILES['excel_file'])) {
                     <div class="file-label" style="font-size:11px; color:#94a3b8; margin-top:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${pageObj.fileName}">${pageObj.fileName}</div>
                 `;
 
-                card.onclick = () => showPreview(card.querySelector('canvas'));
+                card.onclick = () => showPreview(currentPos);
                 card.oncontextmenu = (e) => {
                     e.preventDefault();
                     if (currentPos === state.pageOrder.length - 1) return;
@@ -612,24 +631,50 @@ if (isset($_FILES['excel_file'])) {
             try {
                 const source = sourcePdfs.get(pageObj.fileId);
                 const page = await source.pdfjsDoc.getPage(pageObj.originalIdx + 1);
-                const viewport = page.getViewport({
-                    scale: 1.5
-                });
+                const viewport = page.getViewport({ scale: 1.5 });
                 const canvas = document.getElementById(canvasId);
                 if (!canvas) return;
                 const ctx = canvas.getContext('2d');
                 canvas.height = viewport.height;
                 canvas.width = viewport.width;
                 canvas.style.transform = `rotate(${pageObj.rotation}deg)`;
-                await page.render({
-                    canvasContext: ctx,
-                    viewport
-                }).promise;
-            } catch (e) {
-                console.error(e);
+                await page.render({ canvasContext: ctx, viewport }).promise;
+            } catch (e) { console.error(e); }
+        }
+
+        // --- Improved Preview Functions ---
+        function showPreview(index) {
+            currentPreviewIdx = index;
+            const pageObj = state.pageOrder[index];
+            const canvasId = `canvas-${pageObj.fileId}-${pageObj.originalIdx}-${index}`;
+            const sourceCanvas = document.getElementById(canvasId);
+            
+            if (!sourceCanvas) return;
+
+            const img = document.getElementById('previewImage');
+            img.src = sourceCanvas.toDataURL('image/png');
+            img.style.transform = sourceCanvas.style.transform;
+            
+            document.getElementById('previewModal').style.display = 'flex';
+            
+            // Toggle arrow visibility based on bounds
+            document.getElementById('prevArrow').style.visibility = index > 0 ? 'visible' : 'hidden';
+            document.getElementById('nextArrow').style.visibility = index < state.pageOrder.length - 1 ? 'visible' : 'hidden';
+        }
+
+        function navigatePreview(direction, event) {
+            event.stopPropagation();
+            const newIdx = currentPreviewIdx + direction;
+            if (newIdx >= 0 && newIdx < state.pageOrder.length) {
+                showPreview(newIdx);
             }
         }
 
+        function closePreview() {
+            document.getElementById('previewModal').style.display = 'none';
+        }
+
+        // Original logic for downloads and exports...
         async function downloadSingleGroup(index) {
             if (state.pageOrder.length === 0) return;
             document.getElementById('alertBtn').style.display = 'none';
@@ -640,48 +685,33 @@ if (isset($_FILES['excel_file'])) {
                 const bytes = await generatePdfBlob(targetGroup);
                 downloadBlob(bytes, state.segmentNames[index] || `Document_Part_${index + 1}`);
                 closeAlert();
-            } catch (err) {
-                showAlert("Error: " + err.message);
-            }
+            } catch (err) { showAlert("Error: " + err.message); }
             document.getElementById('alertBtn').style.display = 'inline-block';
         }
 
         async function exportPDF() {
             if (state.pageOrder.length === 0) return showAlert("No pages to export.");
-
             const btn = document.getElementById('alertBtn');
             btn.style.display = 'none';
             showAlert("Generating ZIP file...");
-
             try {
                 const zip = new JSZip();
                 const groups = splitIntoGroups();
-
                 for (let i = 0; i < groups.length; i++) {
                     const bytes = await generatePdfBlob(groups[i]);
                     const name = state.segmentNames[i] || `Document_Part_${i + 1}`;
                     const fileName = name.toLowerCase().endsWith('.pdf') ? name : name + '.pdf';
                     zip.file(fileName, bytes);
                 }
-
-                const zipContent = await zip.generateAsync({
-                    type: "blob"
-                });
-                const zipName = "converted_documents.zip";
-
+                const zipContent = await zip.generateAsync({ type: "blob" });
                 const url = URL.createObjectURL(zipContent);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = zipName;
+                a.download = "converted_documents.zip";
                 a.click();
-
                 setTimeout(() => URL.revokeObjectURL(url), 1000);
                 showAlert("ZIP Downloaded Successfully!");
-            } catch (err) {
-                console.error(err);
-                showAlert("Export Error: " + err.message);
-            }
-
+            } catch (err) { showAlert("Export Error: " + err.message); }
             btn.style.display = 'inline-block';
         }
 
@@ -713,9 +743,7 @@ if (isset($_FILES['excel_file'])) {
         }
 
         function downloadBlob(bytes, filename) {
-            const blob = new Blob([bytes], {
-                type: 'application/pdf'
-            });
+            const blob = new Blob([bytes], { type: 'application/pdf' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -729,21 +757,8 @@ if (isset($_FILES['excel_file'])) {
             document.getElementById('customAlert').style.display = 'flex';
         }
 
-        function closeAlert() {
-            document.getElementById('customAlert').style.display = 'none';
-        }
-
-        function showPreview(canvas) {
-            const img = document.getElementById('previewImage');
-            img.src = canvas.toDataURL('image/png');
-            img.style.transform = canvas.style.transform;
-            document.getElementById('previewModal').style.display = 'flex';
-        }
-
-        function closePreview() {
-            document.getElementById('previewModal').style.display = 'none';
-        }
+        function closeAlert() { document.getElementById('customAlert').style.display = 'none'; }
     </script>
 </body>
-
 </html>
+
