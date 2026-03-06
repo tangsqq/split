@@ -110,12 +110,6 @@ if (isset($_FILES['excel_file'])) {
             -webkit-text-fill-color: transparent;
         }
 
-        .setup-card p {
-            color: #64748b;
-            font-size: 0.95rem;
-            margin-bottom: 25px;
-        }
-
         .btn {
             padding: 10px 24px;
             border-radius: 12px;
@@ -187,7 +181,6 @@ if (isset($_FILES['excel_file'])) {
             min-height: 400px;
             max-width: 1200px;
             margin: 0 auto;
-            transition: all 0.3s ease;
             position: relative;
         }
 
@@ -242,14 +235,6 @@ if (isset($_FILES['excel_file'])) {
         .page-card:hover {
             border-color: var(--primary);
             transform: translateY(-5px);
-        }
-
-        .page-card.dragging {
-            opacity: 0.5;
-        }
-
-        .page-card.drag-over {
-            border-left: 4px solid var(--primary);
         }
 
         canvas {
@@ -340,35 +325,24 @@ if (isset($_FILES['excel_file'])) {
             z-index: 9999;
         }
 
-        .modal-content {
-            background: white;
-            padding: 32px;
-            border-radius: 25px;
-            text-align: center;
-            max-width: 360px;
-            width: 90%;
-        }
-
-        .modal-close-btn {
-            margin-top: 20px;
-            padding: 10px 20px;
-            background: black;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            cursor: pointer;
-        }
-
         /* --- Updated Preview Styles --- */
         #previewModal {
             background: rgba(0, 0, 0, 0.95);
+            overflow: hidden;
         }
 
         #previewImage {
             max-width: 90%;
             max-height: 90vh;
             box-shadow: 0 0 40px rgba(0, 0, 0, 0.8);
-            transition: transform 0.3s ease;
+            cursor: grab;
+            user-select: none;
+            transition: transform 0.1s ease-out;
+            /* Smooth zoom transition */
+        }
+
+        #previewImage:active {
+            cursor: grabbing;
         }
 
         .nav-arrow {
@@ -394,8 +368,13 @@ if (isset($_FILES['excel_file'])) {
             background: rgba(255, 255, 255, 0.3);
         }
 
-        #prevArrow { left: 30px; }
-        #nextArrow { right: 30px; }
+        #prevArrow {
+            left: 30px;
+        }
+
+        #nextArrow {
+            right: 30px;
+        }
 
         .home-btn {
             position: fixed;
@@ -411,14 +390,16 @@ if (isset($_FILES['excel_file'])) {
             z-index: 10000;
         }
 
-        .home-btn i { font-size: 40px; }
+        .home-btn i {
+            font-size: 40px;
+        }
     </style>
 </head>
 
 <body>
     <div class="setup-card">
         <h2>PDF Reorder, Rotate & Split</h2>
-        <p>Right-Click: Split | Left-Click: Preview | Drag: Reorder</p>
+        <p>Right-Click: Split | Scroll: Zoom | Drag Image: Move | Drag Card: Reorder</p>
 
         <div style="display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap;">
             <label for="file-selector" class="file-upload-label">
@@ -434,32 +415,30 @@ if (isset($_FILES['excel_file'])) {
     </div>
 
     <div id="workspace" class="workspace-grid">
-        <div class="drop-hint" id="drop-hint">
-            <i class="fa-solid fa-file-arrow-up" style="color: rgb(210, 211, 214);"></i>
-            Drag and Drop files here
-        </div>
+        <div class="drop-hint" id="drop-hint"><i class="fa-solid fa-file-arrow-up"></i>Drag and Drop files here</div>
     </div>
 
     <div id="customAlert" class="modal-overlay">
-        <div class="modal-content">
+        <div style="background: white; padding: 32px; border-radius: 25px; text-align: center; max-width: 360px; width: 90%;">
             <h3 id="alertTitle">Status</h3>
             <p id="alertMessage"></p>
-            <button class="modal-close-btn" id="alertBtn" onclick="closeAlert()">OK</button>
+            <button class="btn btn-main" id="alertBtn" onclick="closeAlert()">OK</button>
         </div>
     </div>
 
     <div id="previewModal" class="modal-overlay" onclick="closePreview()">
         <button class="nav-arrow" id="prevArrow" onclick="navigatePreview(-1, event)"><i class="fa fa-chevron-left"></i></button>
-        <img id="previewImage" src="">
+        <img id="previewImage" src="" onclick="event.stopPropagation()">
         <button class="nav-arrow" id="nextArrow" onclick="navigatePreview(1, event)"><i class="fa fa-chevron-right"></i></button>
     </div>
 
-    <a href="index.html" class="home-btn" title="Back to Home">
-        <i class="fa fa-home"></i>
-    </a>
+    <a href="index.html" class="home-btn" title="Back to Home"><i class="fa fa-home"></i></a>
 
     <script>
-        const { PDFDocument, degrees } = PDFLib;
+        const {
+            PDFDocument,
+            degrees
+        } = PDFLib;
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
 
         let sourcePdfs = new Map();
@@ -469,6 +448,13 @@ if (isset($_FILES['excel_file'])) {
             splits: new Set(),
             segmentNames: {}
         };
+
+        // Zoom & Drag State
+        let zoomLevel = 1;
+        let isDragging = false;
+        let startX, startY;
+        let translateX = 0,
+            translateY = 0;
 
         function cloneBuffer(buffer) {
             const dst = new ArrayBuffer(buffer.byteLength);
@@ -485,10 +471,7 @@ if (isset($_FILES['excel_file'])) {
             }, false);
         });
 
-        workspace.addEventListener('dragover', () => workspace.classList.add('drag-active'));
-        workspace.addEventListener('dragleave', () => workspace.classList.remove('drag-active'));
         workspace.addEventListener('drop', (e) => {
-            workspace.classList.remove('drag-active');
             const files = e.dataTransfer.files;
             if (files.length > 0) handleFiles(Array.from(files));
         });
@@ -499,19 +482,19 @@ if (isset($_FILES['excel_file'])) {
 
         async function handleFiles(files) {
             if (files.length === 0) return;
-            document.getElementById('alertBtn').style.display = 'none';
             showAlert("Processing files...");
-
             for (const file of files) {
                 const fileId = crypto.randomUUID();
                 try {
                     let rawBuffer;
                     const needsConversion = file.name.match(/\.(xlsx|xls|doc|docx|ppt|pptx|jpg|jpeg|png)$/i);
-
                     if (needsConversion) {
                         const formData = new FormData();
                         formData.append('excel_file', file);
-                        const response = await fetch('', { method: 'POST', body: formData });
+                        const response = await fetch('', {
+                            method: 'POST',
+                            body: formData
+                        });
                         const result = await response.json();
                         if (!result.success) throw new Error(result.error);
                         const binaryStr = atob(result.pdf_base64);
@@ -520,17 +503,15 @@ if (isset($_FILES['excel_file'])) {
                         rawBuffer = bytes.buffer;
                     } else if (file.type === "application/pdf") {
                         rawBuffer = await file.arrayBuffer();
-                    } else {
-                        continue;
-                    }
+                    } else continue;
 
                     sourcePdfs.set(fileId, {
                         buffer: cloneBuffer(rawBuffer),
                         pdfjsDoc: null
                     });
-
-                    const renderBuffer = cloneBuffer(rawBuffer);
-                    const pdfjsDoc = await pdfjsLib.getDocument({ data: renderBuffer }).promise;
+                    const pdfjsDoc = await pdfjsLib.getDocument({
+                        data: cloneBuffer(rawBuffer)
+                    }).promise;
                     sourcePdfs.get(fileId).pdfjsDoc = pdfjsDoc;
 
                     for (let i = 0; i < pdfjsDoc.numPages; i++) {
@@ -542,21 +523,17 @@ if (isset($_FILES['excel_file'])) {
                         });
                     }
                 } catch (err) {
-                    console.error(err);
-                    alert("Error processing " + file.name + ": " + err.message);
+                    alert("Error: " + err.message);
                 }
             }
-            document.getElementById('alertBtn').style.display = 'inline-block';
             closeAlert();
             renderUI();
         }
 
         function renderUI() {
-            const container = document.getElementById('workspace');
-            container.innerHTML = '';
-
+            workspace.innerHTML = '';
             if (state.pageOrder.length === 0) {
-                container.innerHTML = `<div class="drop-hint"><i class="fa fa-cloud-upload"></i>Drag and Drop PDF, Office or Image files here</div>`;
+                workspace.innerHTML = `<div class="drop-hint"><i class="fa fa-cloud-upload"></i>Drag and Drop PDF, Office or Image files here</div>`;
                 return;
             }
 
@@ -568,12 +545,12 @@ if (isset($_FILES['excel_file'])) {
                 div.innerHTML = `
                     <span class="segment-label">File ${idx + 1}:</span>
                     <input type="text" class="rename-input" value="${state.segmentNames[idx] || defaultName}" oninput="state.segmentNames[${idx}] = this.value">
-                    <button class="btn btn-main" style="height: 34px; padding: 0 15px; border-radius: 20px; font-size: 12px;" onclick="downloadSingleGroup(${idx})">Download</button>
+                    <button class="btn btn-main" style="height:34px; font-size:12px;" onclick="downloadSingleGroup(${idx})">Download</button>
                 `;
                 return div;
             };
 
-            container.appendChild(createRenameBar(segmentIndex++));
+            workspace.appendChild(createRenameBar(segmentIndex++));
 
             state.pageOrder.forEach((pageObj, currentPos) => {
                 const card = document.createElement('div');
@@ -583,10 +560,10 @@ if (isset($_FILES['excel_file'])) {
 
                 card.innerHTML = `
                     <div class="badge">#${currentPos + 1}</div>
-                    <button class="delete-btn" title="Delete Page"><i class="fa fa-times"></i></button>
+                    <button class="delete-btn"><i class="fa fa-times"></i></button>
                     <canvas id="${canvasId}"></canvas>
-                    <button class="rotate-btn" title="Rotate 90°"><i class="fa fa-rotate-right"></i></button>
-                    <div class="file-label" style="font-size:11px; color:#94a3b8; margin-top:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${pageObj.fileName}">${pageObj.fileName}</div>
+                    <button class="rotate-btn"><i class="fa fa-rotate-right"></i></button>
+                    <div style="font-size:11px; color:#94a3b8; margin-top:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${pageObj.fileName}</div>
                 `;
 
                 card.onclick = () => showPreview(currentPos);
@@ -613,7 +590,6 @@ if (isset($_FILES['excel_file'])) {
                     e.dataTransfer.setData('text/plain', currentPos);
                     card.classList.add('dragging');
                 };
-                card.ondragover = (e) => e.preventDefault();
                 card.ondrop = (e) => {
                     const fromPos = parseInt(e.dataTransfer.getData('text/plain'));
                     const item = state.pageOrder.splice(fromPos, 1)[0];
@@ -621,9 +597,9 @@ if (isset($_FILES['excel_file'])) {
                     renderUI();
                 };
 
-                container.appendChild(card);
+                workspace.appendChild(card);
                 drawThumb(pageObj, canvasId);
-                if (state.splits.has(currentPos)) container.appendChild(createRenameBar(segmentIndex++));
+                if (state.splits.has(currentPos)) workspace.appendChild(createRenameBar(segmentIndex++));
             });
         }
 
@@ -631,33 +607,47 @@ if (isset($_FILES['excel_file'])) {
             try {
                 const source = sourcePdfs.get(pageObj.fileId);
                 const page = await source.pdfjsDoc.getPage(pageObj.originalIdx + 1);
-                const viewport = page.getViewport({ scale: 1.5 });
+                const viewport = page.getViewport({
+                    scale: 1.5
+                });
                 const canvas = document.getElementById(canvasId);
                 if (!canvas) return;
                 const ctx = canvas.getContext('2d');
                 canvas.height = viewport.height;
                 canvas.width = viewport.width;
                 canvas.style.transform = `rotate(${pageObj.rotation}deg)`;
-                await page.render({ canvasContext: ctx, viewport }).promise;
-            } catch (e) { console.error(e); }
+                await page.render({
+                    canvasContext: ctx,
+                    viewport
+                }).promise;
+            } catch (e) {
+                console.error(e);
+            }
         }
 
-        // --- Improved Preview Functions ---
+        // --- Improved Preview & Zoom/Drag Functions ---
+        function updateImageTransform() {
+            const img = document.getElementById('previewImage');
+            const pageObj = state.pageOrder[currentPreviewIdx];
+            const rotation = pageObj ? `rotate(${pageObj.rotation}deg)` : 'rotate(0deg)';
+            img.style.transform = `translate(${translateX}px, ${translateY}px) ${rotation} scale(${zoomLevel})`;
+        }
+
         function showPreview(index) {
+            zoomLevel = 1;
+            translateX = 0;
+            translateY = 0;
             currentPreviewIdx = index;
             const pageObj = state.pageOrder[index];
             const canvasId = `canvas-${pageObj.fileId}-${pageObj.originalIdx}-${index}`;
             const sourceCanvas = document.getElementById(canvasId);
-            
             if (!sourceCanvas) return;
 
             const img = document.getElementById('previewImage');
             img.src = sourceCanvas.toDataURL('image/png');
-            img.style.transform = sourceCanvas.style.transform;
-            
+            updateImageTransform();
+
             document.getElementById('previewModal').style.display = 'flex';
-            
-            // Toggle arrow visibility based on bounds
             document.getElementById('prevArrow').style.visibility = index > 0 ? 'visible' : 'hidden';
             document.getElementById('nextArrow').style.visibility = index < state.pageOrder.length - 1 ? 'visible' : 'hidden';
         }
@@ -665,34 +655,59 @@ if (isset($_FILES['excel_file'])) {
         function navigatePreview(direction, event) {
             event.stopPropagation();
             const newIdx = currentPreviewIdx + direction;
-            if (newIdx >= 0 && newIdx < state.pageOrder.length) {
-                showPreview(newIdx);
-            }
+            if (newIdx >= 0 && newIdx < state.pageOrder.length) showPreview(newIdx);
         }
 
         function closePreview() {
+            isDragging = false;
             document.getElementById('previewModal').style.display = 'none';
         }
 
-        // Original logic for downloads and exports...
+        // Zoom and Drag Listeners
+        const modal = document.getElementById('previewModal');
+        const previewImg = document.getElementById('previewImage');
+
+        modal.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? -0.1 : 0.1;
+            zoomLevel = Math.min(Math.max(0.5, zoomLevel + delta), 5);
+            updateImageTransform();
+        }, {
+            passive: false
+        });
+
+        previewImg.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            isDragging = true;
+            startX = e.clientX - translateX;
+            startY = e.clientY - translateY;
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            translateX = e.clientX - startX;
+            translateY = e.clientY - startY;
+            updateImageTransform();
+        });
+
+        window.addEventListener('mouseup', () => isDragging = false);
+
+        // --- Original Export/Download Logic ---
         async function downloadSingleGroup(index) {
-            if (state.pageOrder.length === 0) return;
-            document.getElementById('alertBtn').style.display = 'none';
             showAlert("Preparing download...");
             try {
                 const groups = splitIntoGroups();
-                const targetGroup = groups[index];
-                const bytes = await generatePdfBlob(targetGroup);
+                const bytes = await generatePdfBlob(groups[index]);
                 downloadBlob(bytes, state.segmentNames[index] || `Document_Part_${index + 1}`);
                 closeAlert();
-            } catch (err) { showAlert("Error: " + err.message); }
-            document.getElementById('alertBtn').style.display = 'inline-block';
+            } catch (err) {
+                showAlert("Error: " + err.message);
+            }
         }
 
         async function exportPDF() {
             if (state.pageOrder.length === 0) return showAlert("No pages to export.");
-            const btn = document.getElementById('alertBtn');
-            btn.style.display = 'none';
             showAlert("Generating ZIP file...");
             try {
                 const zip = new JSZip();
@@ -700,19 +715,20 @@ if (isset($_FILES['excel_file'])) {
                 for (let i = 0; i < groups.length; i++) {
                     const bytes = await generatePdfBlob(groups[i]);
                     const name = state.segmentNames[i] || `Document_Part_${i + 1}`;
-                    const fileName = name.toLowerCase().endsWith('.pdf') ? name : name + '.pdf';
-                    zip.file(fileName, bytes);
+                    zip.file(name.toLowerCase().endsWith('.pdf') ? name : name + '.pdf', bytes);
                 }
-                const zipContent = await zip.generateAsync({ type: "blob" });
+                const zipContent = await zip.generateAsync({
+                    type: "blob"
+                });
                 const url = URL.createObjectURL(zipContent);
                 const a = document.createElement('a');
                 a.href = url;
                 a.download = "converted_documents.zip";
                 a.click();
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-                showAlert("ZIP Downloaded Successfully!");
-            } catch (err) { showAlert("Export Error: " + err.message); }
-            btn.style.display = 'inline-block';
+                showAlert("ZIP Downloaded!");
+            } catch (err) {
+                showAlert("Export Error: " + err.message);
+            }
         }
 
         function splitIntoGroups() {
@@ -729,9 +745,7 @@ if (isset($_FILES['excel_file'])) {
 
         async function generatePdfBlob(group) {
             const pdfLibDocs = new Map();
-            for (let [id, source] of sourcePdfs) {
-                pdfLibDocs.set(id, await PDFDocument.load(cloneBuffer(source.buffer)));
-            }
+            for (let [id, source] of sourcePdfs) pdfLibDocs.set(id, await PDFDocument.load(cloneBuffer(source.buffer)));
             const newDoc = await PDFDocument.create();
             for (const pageObj of group) {
                 const srcDoc = pdfLibDocs.get(pageObj.fileId);
@@ -743,13 +757,14 @@ if (isset($_FILES['excel_file'])) {
         }
 
         function downloadBlob(bytes, filename) {
-            const blob = new Blob([bytes], { type: 'application/pdf' });
+            const blob = new Blob([bytes], {
+                type: 'application/pdf'
+            });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
             a.download = filename.toLowerCase().endsWith('.pdf') ? filename : filename + '.pdf';
             a.click();
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
 
         function showAlert(msg) {
@@ -757,8 +772,10 @@ if (isset($_FILES['excel_file'])) {
             document.getElementById('customAlert').style.display = 'flex';
         }
 
-        function closeAlert() { document.getElementById('customAlert').style.display = 'none'; }
+        function closeAlert() {
+            document.getElementById('customAlert').style.display = 'none';
+        }
     </script>
 </body>
-</html>
 
+</html>
